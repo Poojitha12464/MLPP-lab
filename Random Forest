@@ -1,0 +1,126 @@
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+from sklearn.datasets import load_breast_cancer
+from sklearn.model_selection import train_test_split, cross_val_score, GridSearchCV
+from sklearn.metrics import (accuracy_score, classification_report,
+                             confusion_matrix, roc_auc_score, roc_curve)
+from sklearn.inspection import permutation_importance
+
+# ══════════════════════════════════════════════════════════════
+#  1. LOAD & SPLIT DATA
+# ══════════════════════════════════════════════════════════════
+data = load_breast_cancer()
+X, y = data.data, data.target
+feature_names = data.feature_names
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42, stratify=y
+)
+
+print(f"Train size : {X_train.shape}")
+print(f"Test size  : {X_test.shape}")
+print(f"Classes    : {data.target_names}")
+
+# ══════════════════════════════════════════════════════════════
+#  2. TRAIN — Random Forest Classifier
+# ══════════════════════════════════════════════════════════════
+rf = RandomForestClassifier(
+    n_estimators      = 200,       # number of trees
+    max_depth         = None,      # grow until pure leaves
+    min_samples_split = 2,         # min samples to split a node
+    min_samples_leaf  = 1,         # min samples at leaf
+    max_features      = "sqrt",    # features per split (sqrt for clf)
+    bootstrap         = True,      # use bagging
+    oob_score         = True,      # out-of-bag score (free validation)
+    class_weight      = "balanced",# handles class imbalance
+    random_state      = 42,
+    n_jobs            = -1         # use all CPU cores
+)
+
+rf.fit(X_train, y_train)
+
+print(f"\nOOB Score  : {rf.oob_score_:.4f}")   # free accuracy estimate
+
+# ══════════════════════════════════════════════════════════════
+#  3. EVALUATE
+# ══════════════════════════════════════════════════════════════
+y_pred      = rf.predict(X_test)
+y_pred_prob = rf.predict_proba(X_test)[:, 1]
+
+print(f"\nAccuracy   : {accuracy_score(y_test, y_pred):.4f}")
+print(f"ROC-AUC    : {roc_auc_score(y_test, y_pred_prob):.4f}")
+print(f"\nClassification Report:\n{classification_report(y_test, y_pred,
+      target_names=data.target_names)}")
+
+# Cross-validation
+cv_scores = cross_val_score(rf, X, y, cv=5, scoring="roc_auc", n_jobs=-1)
+print(f"5-Fold CV ROC-AUC: {cv_scores.mean():.4f} ± {cv_scores.std():.4f}")
+
+# ══════════════════════════════════════════════════════════════
+#  4. PLOTS
+# ══════════════════════════════════════════════════════════════
+
+# ── 4a. Confusion Matrix ──────────────────────────────────────
+cm = confusion_matrix(y_test, y_pred)
+plt.figure(figsize=(6, 5))
+sns.heatmap(cm, annot=True, fmt="d", cmap="Blues",
+            xticklabels=data.target_names,
+            yticklabels=data.target_names)
+plt.title("Confusion Matrix")
+plt.ylabel("Actual"); plt.xlabel("Predicted")
+plt.tight_layout(); plt.show()
+
+# ── 4b. ROC Curve ─────────────────────────────────────────────
+fpr, tpr, _ = roc_curve(y_test, y_pred_prob)
+auc = roc_auc_score(y_test, y_pred_prob)
+
+plt.figure(figsize=(6, 5))
+plt.plot(fpr, tpr, lw=2, label=f"AUC = {auc:.3f}")
+plt.plot([0, 1], [0, 1], "k--")
+plt.xlabel("False Positive Rate"); plt.ylabel("True Positive Rate")
+plt.title("ROC Curve"); plt.legend(); plt.tight_layout(); plt.show()
+
+# ── 4c. Feature Importance (MDI) ──────────────────────────────
+importances = pd.Series(rf.feature_importances_, index=feature_names)
+top15 = importances.nlargest(15).sort_values()
+
+plt.figure(figsize=(8, 6))
+top15.plot(kind="barh", color="steelblue")
+plt.title("Top 15 Feature Importances (MDI)")
+plt.xlabel("Mean Decrease in Impurity")
+plt.tight_layout(); plt.show()
+
+# ── 4d. Permutation Importance (more reliable) ────────────────
+perm = permutation_importance(rf, X_test, y_test,
+                              n_repeats=15, random_state=42, n_jobs=-1)
+perm_df = pd.DataFrame({
+    "feature"  : feature_names,
+    "importance": perm.importances_mean,
+    "std"       : perm.importances_std
+}).sort_values("importance", ascending=False).head(15)
+
+plt.figure(figsize=(8, 6))
+plt.barh(perm_df["feature"], perm_df["importance"],
+         xerr=perm_df["std"], color="darkorange")
+plt.title("Top 15 Permutation Importances")
+plt.xlabel("Mean Accuracy Decrease")
+plt.gca().invert_yaxis(); plt.tight_layout(); plt.show()
+
+# ── 4e. OOB Error vs n_estimators ─────────────────────────────
+oob_errors = []
+tree_range = range(10, 300, 10)
+
+for n in tree_range:
+    clf = RandomForestClassifier(n_estimators=n, oob_score=True,
+                                 random_state=42, n_jobs=-1)
+    clf.fit(X_train, y_train)
+    oob_errors.append(1 - clf.oob_score_)
+
+plt.figure(figsize=(8, 4))
+plt.plot(tree_range, oob_errors, marker="o", markersize=3)
+plt.xlabel("Number of Trees"); plt.ylabel("OOB Error Rate")
+plt.title("OOB Error vs Number of Trees")
+plt.tight_layout(); plt.show()
